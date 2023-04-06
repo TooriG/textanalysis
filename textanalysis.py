@@ -1,76 +1,85 @@
 import streamlit as st
 import MeCab
-from collections import Counter
-from sklearn.feature_extraction.text import TfidfVectorizer
+import numpy as np
+import pandas as pd
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+from sklearn.decomposition import LatentDirichletAllocation
+from wordcloud import WordCloud
 import matplotlib.pyplot as plt
 import networkx as nx
 
-def tokenize(text):
-    mecab = MeCab.Tagger("-Owakati")
-    return mecab.parse(text).split()
+# MeCabの初期化
+mecab = MeCab.Tagger("-Owakati")
 
-def count_words(text):
-    words = tokenize(text)
-    return Counter(words)
+def extract_nouns(text):
+    """
+    文章から名詞を抽出する関数
+    """
+    node = mecab.parse(text)
+    words = node.split(" ")
+    nouns = [word for word in words if "名詞" in mecab.parse(word).split("\t")[1]]
+    return nouns
 
-def calculate_tfidf(text):
-    words = tokenize(text)
-    vectorizer = TfidfVectorizer(tokenizer=tokenize)
-    tf_idf = vectorizer.fit_transform([text])
+def main():
+    st.title("日本語テキスト解析アプリ")
+
+    # テキストの入力
+    text = st.text_area("解析したいテキストを入力してください。", height=200)
+
+    # 名詞の抽出
+    nouns = extract_nouns(text)
+
+    # 名詞の出現頻度の分析
+    st.header("名詞の出現頻度")
+    st.write("総単語数:", len(nouns))
+    freq_df = pd.DataFrame({"単語":nouns})
+    freq_df = freq_df.groupby("単語").size().reset_index(name="出現回数")
+    freq_df = freq_df.sort_values("出現回数", ascending=False)
+    st.dataframe(freq_df)
+
+    # WordCloudの作成
+    st.header("WordCloud")
+    wc = WordCloud(width=800, height=400, background_color="white", font_path="/usr/share/fonts/truetype/fonts-japanese-gothic.ttf").generate(" ".join(nouns))
+    plt.figure(figsize=(12, 12))
+    plt.imshow(wc, interpolation="bilinear")
+    plt.axis("off")
+    st.pyplot(plt)
+
+    # LDAによるトピックモデリング
+    st.header("トピックモデリング")
+    n_topics = st.slider("トピック数を選択してください。", 1, 10, 3)
+    vectorizer = CountVectorizer(tokenizer=extract_nouns)
+    x = vectorizer.fit_transform([text])
+    lda = LatentDirichletAllocation(n_components=n_topics)
+    lda.fit(x)
     feature_names = vectorizer.get_feature_names()
-    return [(feature_names[i], tf_idf[0, i]) for i in range(len(feature_names))]
+    for i, topic in enumerate(lda.components_):
+        st.subheader(f"トピック{i+1}")
+        top_words = [feature_names[i] for i in topic.argsort()[:-11:-1]]
+        st.write(", ".join(top_words))
 
-def create_wordcloud(word_freq):
-    from wordcloud import WordCloud
-    wc = WordCloud(background_color="white", font_path="./fonts/YuMincho-Regular.ttf", width=800, height=400)
-    wc.generate_from_frequencies(word_freq)
-    return wc
-
-def create_graph(tfidf):
-    co_matrix = tfidf.T * tfidf
-    co_matrix.setdiag(0)
-    coo = co_matrix.tocoo()
+        # 単語共起ネットワーク
+    st.header("単語共起ネットワーク")
+    window_size = st.slider("窓サイズを選択してください。", 1, 10, 2)
+    words = [word for word in text.split() if word in nouns]
+    cooccurrence = np.zeros((len(set(nouns)), len(set(nouns))))
+    for i in range(len(words)):
+        for j in range(i+1, min(i+window_size+1, len(words))):
+            if words[j] != words[i]:
+                cooccurrence[list(set(nouns)).index(words[i]), list(set(nouns)).index(words[j])] += 1
+                cooccurrence[list(set(nouns)).index(words[j]), list(set(nouns)).index(words[i])] += 1
     G = nx.Graph()
-    for i, j, v in zip(coo.row, coo.col, coo.data):
-        G.add_edge(feature_names[i], feature_names[j], weight=v)
-    return G
-
-st.set_page_config(page_title="日本語文学研究用アプリ", page_icon="📚", layout="wide")
-
-st.title("日本語文学研究用アプリ")
-
-# テキストを入力するためのUI
-user_input = st.text_area("テキストを入力してください", "", height=400)
-
-# ユーザーがテキストを入力したら、後続の処理を実行する
-if user_input:
-    # 単語の頻度をカウントする
-    word_freq = count_words(user_input)
-
-    # 単語の重要度を計算する
-    tfidf = calculate_tfidf(user_input)
-
-    # 単語の頻度を可視化する
-    st.subheader("単語の頻度")
-    st.write(word_freq.most_common())
-
-    # ワードクラウドを作成する
-    st.subheader("ワードクラウド")
-    wc = create_wordcloud(word_freq)
-    st.image(wc.to_array(), use_column_width=True)
-
-    # 単語の重要度を可視化する
-    st.subheader("単語の重要度（TF-IDF）")
-    tfidf_dict = dict(tfidf)
-    st.write(sorted(tfidf_dict.items(), key=lambda x: x[1], reverse=True))
-
-    # 単語間の関係を可視化する
-    st.subheader("単語間の関係")
-    G = create_graph(tfidf)
-    pos = nx.spring_layout(G, k=0.5)
-    nx.draw_networkx_nodes(G, pos, node_color="#ffb347", node_size=500)
-    nx.draw_networkx_labels(G, pos, font_size=12, font_family="Yu Mincho")
-    nx.draw_networkx_edges(G, pos, width=1)
-    nx.draw_networkx_edge_labels(G, pos, font_size=12, font_family="Yu Mincho")
+    for i in range(len(nouns)):
+        G.add_node(nouns[i])
+    for i in range(len(nouns)):
+        for j in range(i+1, len(nouns)):
+            if cooccurrence[i, j] > 0:
+                G.add_edge(nouns[i], nouns[j], weight=cooccurrence[i, j])
+    pos = nx.spring_layout(G, k=0.7)
+    nx.draw_networkx_nodes(G, pos, node_size=300)
+    nx.draw_networkx_labels(G, pos, font_family="IPAexGothic")
+    edges = [(u, v) for (u, v, d) in G.edges(data=True)]
+    weights = [d["weight"] for (u, v, d) in G.edges(data=True)]
+    nx.draw_networkx_edges(G, pos, edgelist=edges, width=weights, alpha=0.5, edge_color="r")
     plt.axis("off")
     st.pyplot(plt)
