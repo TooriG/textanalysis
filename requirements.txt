@@ -1,6 +1,8 @@
 streamlit
-mecab-python3
+pandas
+numpy
 scikit-learn
-wordcloud
+mecab-python3
 matplotlib
+wordcloud
 networkx
